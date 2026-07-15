@@ -42,10 +42,14 @@ fi
 TOK="${AGENT_SANDBOX_TOKEN:-}"
 if [ -z "$TOK" ]; then
   if [ -r /dev/tty ]; then
-    printf 'GitHub 토큰 입력 (repo + read:packages): ' > /dev/tty
+    # echo 를 프롬프트보다 **먼저** 끈다. 반대 순서면 프롬프트~stty 사이 창에 들어온
+    # 입력(붙여넣기·타이핑 선행)이 평문으로 찍힌다. Ctrl-C 로 빠져나가도 echo 복구.
     stty -echo < /dev/tty 2>/dev/null || true
+    trap 'stty echo < /dev/tty 2>/dev/null || true; exit 130' INT TERM HUP
+    printf 'GitHub 토큰 입력 (repo + read:packages): ' > /dev/tty
     read -r TOK < /dev/tty
     stty echo < /dev/tty 2>/dev/null || true
+    trap - INT TERM HUP
     printf '\n' > /dev/tty
   fi
 fi
