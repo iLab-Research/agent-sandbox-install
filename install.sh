@@ -123,8 +123,8 @@ if [ "$linked" -eq 1 ]; then
     *)  # 심링크는 걸었지만 그 디렉터리가 PATH 에 없다 → 프로파일에 추가
         for rc in "$HOME/.zshrc" "$HOME/.bashrc"; do
           [ -e "$rc" ] || continue
-          grep -q 'agent-sandbox PATH' "$rc" 2>/dev/null && continue
-          printf '\n# agent-sandbox PATH (uninstall 이 이 블록을 지웁니다)\nexport PATH="%s:$PATH"\n' \
+          grep -q 'agent-sandbox PATH' "$rc" 2>/dev/null && continue   # 재설치 멱등
+          printf '\n# >>> agent-sandbox PATH >>>\nexport PATH="%s:$PATH"\n# <<< agent-sandbox PATH <<<\n' \
             "$link_dir" >> "$rc"
           path_added=1
         done ;;
@@ -140,10 +140,15 @@ fi
 
 # ---- setup: 무거운 자산(커널·vminit·이미지)은 여기서 받는다 ----
 echo
-AGENT_SANDBOX_REGISTRY_TOKEN="$TOK" AGENT_SANDBOX_REGISTRY_USER="$GH_USER" \
-  "$PREFIX/bin/agent-sandbox" setup --agents "$AGENTS" || {
-    echo "install.sh: setup 실패 — 고친 뒤 \`agent-sandbox setup\` 재실행하면 이어서 받습니다." >&2
-  }
+# 토큰은 registry.env(0600)에 이미 저장됨 — setup 이 거기서 읽는다. env 로 또 넘기지 않는다
+# (자식 프로세스 env 로 토큰이 새지 않게).
+if ! "$PREFIX/bin/agent-sandbox" setup --agents "$AGENTS"; then
+  echo >&2
+  echo "install.sh: CLI 는 설치됐지만 런타임 자산 설치가 실패했습니다." >&2
+  echo "  원인을 고친 뒤 재실행하면 이어받습니다:  agent-sandbox setup" >&2
+  echo "  (지금 상태로는 에이전트 실행이 안 됩니다 — 자산이 없습니다.)" >&2
+  exit 1
+fi
 
 echo
 if [ "$path_added" -eq 1 ]; then
