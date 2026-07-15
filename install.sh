@@ -1,5 +1,9 @@
 #!/bin/sh
-# install.sh — agent-sandbox 원커맨드 설치 (macOS 네이티브). Docker·brew·Xcode 불요.
+# install.sh — agent-sandbox CLI 설치 (macOS 네이티브). Docker·brew·Xcode 불요.
+#
+# 역할 분담: 이 스크립트는 **CLI 만** 깔고 PATH 에 연결한다(몇 초).
+# 커널·vminit·offline 이미지 같은 무거운 자산은 `agent-sandbox setup` 이 받는다 —
+# 재실행 가능하고, 끊겨도 이어받고, doctor 가 빠졌다 하면 setup 이 채운다.
 #
 # 배포 모델: **소스·이미지 private**. 설치 시 GitHub 토큰 하나만 입력하면
 #   (1) private 릴리스에서 프리빌트 번들 다운로드, (2) private 이미지 pull
@@ -64,7 +68,9 @@ echo "== install (release) — user=$GH_USER, arch=$arch =="
 
 # ---- 번들 다운로드: private 릴리스 에셋을 토큰으로(API 경유) ----
 TMP=$(mktemp -d); trap 'rm -rf "$TMP"' EXIT INT TERM
-NAME="agent-sandbox-macos-$arch.tar.gz"
+# CLI 만 받는다(수십 MB, 몇 초). 커널·vminit·이미지 같은 무거운 자산은 아래 `setup` 이 받는다 —
+# 그래야 중간에 끊겨도 setup 만 다시 돌리면 되고, setup 이 실제로 "설치" 를 하는 물건이 된다.
+NAME="agent-sandbox-cli-$arch.tar.gz"
 if [ -n "${AGENT_SANDBOX_RELEASE_URL:-}" ]; then
   curl -fSL --retry 3 -o "$TMP/b.tgz" "$AGENT_SANDBOX_RELEASE_URL"
 else
@@ -87,12 +93,63 @@ tar -xzf "$TMP/b.tgz" -C "$PREFIX"
 chmod +x "$PREFIX"/bin/* 2>/dev/null || true
 echo "  설치됨: $PREFIX"
 
-# ---- setup: 같은 토큰으로 private 이미지 pull 인증 ----
-AGENT_SANDBOX_REGISTRY_TOKEN="$TOK" AGENT_SANDBOX_REGISTRY_USER="$GH_USER" \
-  "$PREFIX/bin/agent-sandbox" setup --agents "$AGENTS" || true
-
-# 런타임에도 이미지 pull 인증이 필요하므로 토큰을 로컬에 보관(0600). 지우려면 이 파일 삭제.
+# ---- 토큰 보관: setup 의 자산 다운로드와 런타임 이미지 pull 이 같은 토큰을 쓴다(0600) ----
 CFG="$PREFIX/registry.env"
 umask 077; printf 'AGENT_SANDBOX_REGISTRY_TOKEN=%s\nAGENT_SANDBOX_REGISTRY_USER=%s\n' "$TOK" "$GH_USER" > "$CFG"
-echo "  레지스트리 인증 저장: $CFG (0600)"
-echo "완료. 실행: $PREFIX/bin/claude-sandbox -p '...'"
+
+# ---- PATH 연결: CLI 를 이름으로 부를 수 있어야 CLI 다 ----
+# 우선순위: 쓰기 가능한 PATH 디렉터리에 심링크(dotfile 안 건드림, uninstall 이 깔끔) →
+# 안 되면 셸 프로파일에 PATH 추가(표식 주석으로 감싸 uninstall 이 정확히 지운다).
+link_dir=""
+for d in /usr/local/bin "$HOME/.local/bin"; do
+  case ":$PATH:" in *":$d:"*) [ -d "$d" ] && [ -w "$d" ] && { link_dir="$d"; break; } ;; esac
+done
+if [ -z "$link_dir" ] && [ -w "$HOME" ]; then
+  # ~/.local/bin 은 관례적 사용자 bin. 없으면 만들고 PATH 에 추가한다.
+  mkdir -p "$HOME/.local/bin" 2>/dev/null && link_dir="$HOME/.local/bin"
+fi
+
+linked=0
+if [ -n "$link_dir" ]; then
+  for b in agent-sandbox claude-sandbox codex-sandbox; do
+    ln -sf "$PREFIX/bin/$b" "$link_dir/$b" 2>/dev/null && linked=1
+  done
+fi
+
+path_added=0
+if [ "$linked" -eq 1 ]; then
+  case ":$PATH:" in
+    *":$link_dir:"*) : ;;
+    *)  # 심링크는 걸었지만 그 디렉터리가 PATH 에 없다 → 프로파일에 추가
+        for rc in "$HOME/.zshrc" "$HOME/.bashrc"; do
+          [ -e "$rc" ] || continue
+          grep -q 'agent-sandbox PATH' "$rc" 2>/dev/null && continue
+          printf '\n# agent-sandbox PATH (uninstall 이 이 블록을 지웁니다)\nexport PATH="%s:$PATH"\n' \
+            "$link_dir" >> "$rc"
+          path_added=1
+        done ;;
+  esac
+fi
+
+echo "  CLI 설치됨: $PREFIX/bin"
+if [ "$linked" -eq 1 ]; then
+  echo "  PATH 연결: $link_dir/{agent-sandbox,claude-sandbox,codex-sandbox}"
+else
+  echo "  경고: 쓰기 가능한 PATH 디렉터리를 못 찾음 — 전체 경로로 실행하세요." >&2
+fi
+
+# ---- setup: 무거운 자산(커널·vminit·이미지)은 여기서 받는다 ----
+echo
+AGENT_SANDBOX_REGISTRY_TOKEN="$TOK" AGENT_SANDBOX_REGISTRY_USER="$GH_USER" \
+  "$PREFIX/bin/agent-sandbox" setup --agents "$AGENTS" || {
+    echo "install.sh: setup 실패 — 고친 뒤 \`agent-sandbox setup\` 재실행하면 이어서 받습니다." >&2
+  }
+
+echo
+if [ "$path_added" -eq 1 ]; then
+  echo "완료. 새 터미널을 열거나 \`source ~/.zshrc\` 후:  claude-sandbox -p '...'"
+elif [ "$linked" -eq 1 ]; then
+  echo "완료. 실행:  claude-sandbox -p '...'"
+else
+  echo "완료. 실행:  $PREFIX/bin/claude-sandbox -p '...'"
+fi
