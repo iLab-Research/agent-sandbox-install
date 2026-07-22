@@ -74,6 +74,36 @@ if ($LASTEXITCODE -ne 0) {
     exit 1
 }
 
+# ---- HCS 실행 권한: Hyper-V Administrators — 설치 시 1회 승인, 이후 실행은 승인 0회 ----
+# hcs-boot 의 HCS create 는 vmcompute ACL(Administrators/Hyper-V Administrators)을 요구한다. UAC 표준
+# 토큰은 Administrators=deny-only 라 매 실행마다 상승을 물어본다. Hyper-V Administrators 는 UAC 필터
+# 예외 — 1회 가입하면(재로그인 후) claude-sandbox 가 승인 없이 HCS 를 띄운다. 지속 설정이라 설치 때 1회
+# 상승으로 끝난다. (macOS vz 가 root 없이 되는 것과 같은 위치. Docker Desktop docker-users 모델.)
+# UVM 아웃바운드(잽 egress→API)는 **vsock 터널**(hcs-boot serveEgress)이 담당 — 호스트-NAT/WinNAT 불요.
+$hvSid   = 'S-1-5-32-578'
+$me      = (whoami).Trim()
+$isHVMember = [bool]((whoami /groups) | Select-String -Quiet $hvSid)
+if (-not $isHVMember) {
+    Write-Host ""
+    Write-Host "HCS(UVM) 실행 권한: '$me' 을 Hyper-V Administrators 에 추가합니다 (관리자 승인 1회 — 이후 승인 불필요)"
+    try { Start-Process powershell -Verb RunAs -Wait -ArgumentList `
+        '-NoProfile','-Command',"Add-LocalGroupMember -SID $hvSid -Member '$me' -ErrorAction SilentlyContinue" } catch { }
+    $okHV = [bool](Get-LocalGroupMember -SID $hvSid -EA SilentlyContinue | Where-Object { $_.Name -match [regex]::Escape($me) })
+    if ($okHV) {
+        Write-Host "  ✓ 추가됨 — **로그오프/로그인(또는 재부팅) 한 번** 뒤 승인 없이 실행됩니다."
+    } else {
+        Write-Warning "  자동가입 실패(취소/도메인 정책). 관리자 PowerShell: Add-LocalGroupMember -SID $hvSid -Member '$me'"
+    }
+} else {
+    Write-Host "  ✓ Hyper-V Administrators — HCS 실행 권한 있음(실행 승인 불필요)"
+}
+
 Write-Host ""
-Write-Host "완료. 에이전트 실행은 **관리자 PowerShell**에서:"
-Write-Host "  & '$Prefix\bin\agent-sandbox.exe' claude -p '...'"
+Write-Host "완료."
+if (-not $isHVMember) {
+    Write-Host "  → 로그오프/로그인 후부터 승인 없이 실행됩니다:"
+} else {
+    Write-Host "  실행:"
+}
+Write-Host "  claude-sandbox -p '...'    (multica 태스크에서 'Claude (sandboxed)' 선택 시 자동 실행)"
+Write-Host "  (권한 반영 전이면 관리자 PowerShell 에서: & '$Prefix\bin\agent-sandbox.exe' claude -p '...')"
